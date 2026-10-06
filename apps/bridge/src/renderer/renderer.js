@@ -69,6 +69,7 @@ async function selectSource(id, name) {
   track = nextTrack;
   activeSourceId = id;
   activeSourceName = name;
+  window.bridge.setActiveSource(id);
   try {
     localStorage.setItem('qw.lastSource', JSON.stringify({ id, name }));
   } catch {}

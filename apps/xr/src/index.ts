@@ -1,19 +1,20 @@
-// Spike Fase 0 — confronto di leggibilità nel visore.
-// Due pannelli mostrano lo stesso stream di una finestra Mac:
-//   sinistra → mesh WebGL con VideoTexture (rendering classico, ricampionato due volte)
-//   destra   → XRQuadLayer (composto direttamente dal compositor di Horizon OS)
+// Client WebXR del workspace: una finestra del Mac come pannello in MR, con input remoto.
 //
-// Controller destro:  stick su/giù = pannelli più grandi/piccoli
-//                     A = mipmap on/off sul pannello mesh
-//                     B = riporta i pannelli davanti a te
-// Grab (raggio + grilletto) su un pannello per spostarlo.
+// Struttura del pannello:
+//   barra (afferrabile col raggio + grilletto) → sposta tutto
+//   └─ finestra (XRQuadLayer, composto dal compositor di Horizon OS) → click / trascina / scroll sul Mac
+//   │  └─ puntatore locale, disegnato a 90 fps: non aspetta il video
+//   └─ HUD di misura
+//
+// Controller destro:  stick su/giù sulla finestra = scroll; altrove = pannello più grande/piccolo
+//                     B = riporta il pannello davanti a te
 
 import {
   CanvasTexture,
+  CircleGeometry,
   DistanceGrabbable,
   InputComponent,
   LinearFilter,
-  LinearMipmapLinearFilter,
   Mesh,
   MeshBasicMaterial,
   MovementMode,
@@ -21,6 +22,7 @@ import {
   OrthographicCamera,
   PlaneGeometry,
   RayInteractable,
+  RingGeometry,
   Scene,
   ShaderMaterial,
   SRGBColorSpace,
@@ -29,16 +31,25 @@ import {
   World,
   XRLayerState,
   XRQuadLayer,
-  type WebGLRenderTarget,
   createSystem,
-  type Entity,
+  type WebGLRenderTarget,
 } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { connectViewer, type StreamStats } from '@qw/client';
+import { OneEuroFilter } from './one-euro.js';
 
-const PANEL_WIDTH_M = 1.0;
+const PANEL_WIDTH_M = 1.2;
 const PANEL_DISTANCE_M = 1.0;
-const PANEL_GAP_M = 0.08;
+const BAR_HEIGHT_M = 0.035;
+const BAR_GAP_M = 0.015;
+const SCROLL_PX_PER_FRAME = 18;
+const STICK_DEADZONE = 0.2;
+// Filtro del puntatore, in metri sul pannello: fermo sotto ~1 Hz di tremolio, reattivo quando ci si muove.
+const POINTER_MIN_CUTOFF_HZ = 0.7;
+const POINTER_BETA = 22;
+// Col tasto premuto il punto resta bloccato finché non ci si sposta di oltre 1,2 cm: il gesto di premere
+// il grilletto non deve spostare il click, e un trascinamento parte solo quando è voluto.
+const DRAG_START_M = 0.012;
 
 // --- Stream dal bridge ---------------------------------------------------------
 
@@ -72,14 +83,7 @@ console.warn = (...args: unknown[]) => {
   origWarn(...args);
 };
 
-// Texture per il pannello mesh: sRGB, con mipmap per ridurre lo sfarfallio quando è rimpicciolita.
-const meshTexture = new VideoTexture(video);
-meshTexture.colorSpace = SRGBColorSpace;
-meshTexture.generateMipmaps = true;
-meshTexture.minFilter = LinearMipmapLinearFilter;
-meshTexture.magFilter = LinearFilter;
-
-// Texture per il layer: copiamo i pixel 1:1 nella superficie del compositor, senza conversioni.
+// Texture del layer: copiamo i pixel 1:1 nella superficie del compositor, senza conversioni.
 const layerTexture = new VideoTexture(video);
 layerTexture.colorSpace = NoColorSpace;
 layerTexture.generateMipmaps = false;
@@ -103,111 +107,234 @@ blitScene.add(
   ),
 );
 
-// --- HUD di misura ---------------------------------------------------------------
+// --- Elementi di interfaccia disegnati su canvas -------------------------------------
 
-const hudCanvas = document.createElement('canvas');
-hudCanvas.width = 1024;
-hudCanvas.height = 200;
-const hudTexture = new CanvasTexture(hudCanvas);
-hudTexture.colorSpace = SRGBColorSpace;
+function canvasPlane(
+  width: number,
+  height: number,
+  px: number,
+  draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void,
+) {
+  const c = document.createElement('canvas');
+  c.width = px;
+  c.height = Math.round((px * height) / width);
+  const texture = new CanvasTexture(c);
+  texture.colorSpace = SRGBColorSpace;
+  const redraw = () => {
+    draw(c.getContext('2d')!, c.width, c.height);
+    texture.needsUpdate = true;
+  };
+  redraw();
+  const mesh = new Mesh(new PlaneGeometry(width, height), new MeshBasicMaterial({ map: texture, transparent: true }));
+  return { mesh, redraw };
+}
 
-function drawHud(lines: string[]) {
-  const ctx = hudCanvas.getContext('2d')!;
-  ctx.fillStyle = 'rgba(16,18,22,0.92)';
-  ctx.fillRect(0, 0, hudCanvas.width, hudCanvas.height);
+let hudLines: string[] = [];
+const hud = canvasPlane(0.8, 0.13, 1024, (ctx, w, h) => {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(16,18,22,0.88)';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, w, h, 18);
+  ctx.fill();
   ctx.fillStyle = '#e6e8eb';
   ctx.font = '30px ui-monospace, monospace';
-  lines.forEach((l, i) => ctx.fillText(l, 24, 46 + i * 44));
-  hudTexture.needsUpdate = true;
-}
+  hudLines.forEach((l, i) => ctx.fillText(l, 24, 46 + i * 42));
+});
 
-function makeLabel(text: string) {
-  const c = document.createElement('canvas');
-  c.width = 512;
-  c.height = 64;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = 'rgba(16,18,22,0.85)';
-  ctx.fillRect(0, 0, c.width, c.height);
-  ctx.fillStyle = '#9ec1ff';
-  ctx.font = 'bold 34px system-ui, sans-serif';
-  ctx.fillText(text, 18, 44);
-  const t = new CanvasTexture(c);
-  t.colorSpace = SRGBColorSpace;
-  return new Mesh(new PlaneGeometry(0.4, 0.05), new MeshBasicMaterial({ map: t, transparent: true }));
-}
+let barHover = false;
+const bar = canvasPlane(PANEL_WIDTH_M * 0.35, BAR_HEIGHT_M, 512, (ctx, w, h) => {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = barHover ? 'rgba(79,140,255,0.95)' : 'rgba(40,44,52,0.9)';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(230,232,235,0.9)';
+  for (let i = -2; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.arc(w / 2 + i * 16, h / 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+});
 
 // --- Scena --------------------------------------------------------------------------
 
 const world = await World.create(document.getElementById('scene-container') as HTMLDivElement, projectOptions);
 remoteLog(`world creato; immersive-ar supportato: ${await navigator.xr?.isSessionSupported('immersive-ar')}`);
 
-meshTexture.anisotropy = world.renderer.capabilities.getMaxAnisotropy();
-
-let aspect = 1740 / 2940;
+let aspect = 1128 / 1918;
 let widthM = PANEL_WIDTH_M;
 
-const meshPanel = new Mesh(
-  new PlaneGeometry(1, 1),
-  new MeshBasicMaterial({ map: meshTexture, toneMapped: false }),
-);
-const meshEntity = world.createTransformEntity(meshPanel);
-meshEntity.addComponent(RayInteractable);
-meshEntity.addComponent(DistanceGrabbable, { movementMode: MovementMode.MoveAtSource, scale: false });
+// Barra: l'unico punto di presa. Il contenuto della finestra resta libero per click e scroll.
+const barEntity = world.createTransformEntity(bar.mesh);
+barEntity.addComponent(RayInteractable);
+barEntity.addComponent(DistanceGrabbable, { movementMode: MovementMode.MoveAtSource, scale: false });
+bar.mesh.addEventListener('pointerenter', () => {
+  barHover = true;
+  bar.redraw();
+});
+bar.mesh.addEventListener('pointerleave', () => {
+  barHover = false;
+  bar.redraw();
+});
 
-const layerEntity = world.createTransformEntity();
+const layerEntity = world.createTransformEntity(undefined, { parent: barEntity });
 layerEntity.addComponent(XRQuadLayer, {
   width: widthM,
   height: widthM * aspect,
-  pixelWidth: 2940,
-  pixelHeight: 1740,
+  pixelWidth: 1918,
+  pixelHeight: 1128,
   renderCallback: () => world.renderer.render(blitScene, blitCamera),
 });
 layerEntity.addComponent(RayInteractable);
-layerEntity.addComponent(DistanceGrabbable, { movementMode: MovementMode.MoveAtSource, scale: false });
 
-const meshLabel = makeLabel('A · Mesh WebGL');
-const layerLabel = makeLabel('B · Compositor layer');
-meshEntity.object3D!.add(meshLabel);
-layerEntity.object3D!.add(layerLabel);
+const hudEntity = world.createTransformEntity(hud.mesh, { parent: barEntity });
 
-const hud = new Mesh(new PlaneGeometry(0.8, 0.156), new MeshBasicMaterial({ map: hudTexture, transparent: true }));
-const hudEntity = world.createTransformEntity(hud);
+// Puntatore locale: anello sul punto colpito, appena davanti al pannello e sempre sopra il contenuto.
+const cursor = new Mesh(
+  new RingGeometry(0.004, 0.0065, 32),
+  new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthTest: false }),
+);
+const cursorDot = new Mesh(new CircleGeometry(0.0022, 16), new MeshBasicMaterial({ color: 0x4f8cff, depthTest: false }));
+cursor.add(cursorDot);
+cursor.renderOrder = 10;
+cursorDot.renderOrder = 11;
+cursor.visible = false;
+// Il puntatore non deve intercettare il raggio: altrimenti le UV lette sarebbero quelle dell'anello
+// (che sta davanti alla finestra) e il cursore del Mac salterebbe a ogni frame.
+for (const m of [cursor, cursorDot]) {
+  m.raycast = () => {};
+  (m as unknown as { pointerEvents: string }).pointerEvents = 'none';
+}
+world.createTransformEntity(cursor, { parent: layerEntity });
+
+// --- Input remoto -------------------------------------------------------------------
+
+type PanelPointerEvent = {
+  uv?: { x: number; y: number };
+  point: Vector3;
+  pointerId: number;
+  pointerType?: string;
+};
+type PointerListener = (e: PanelPointerEvent) => void;
+
+// Solo i puntatori XR (raggio di controller e mani, tocco diretto) comandano il Mac. IWSDK genera anche un
+// puntatore "screen-*" per la pagina 2D che in XR segue lo sguardo: va ignorato, altrimenti il cursore
+// del Mac salta tra il punto mirato e quello guardato.
+const isXrPointer = (e: PanelPointerEvent) => !e.pointerType?.startsWith('screen');
+
+// Un solo puntatore attivo alla volta: quello entrato per primo, o quello che ha premuto per ultimo.
+let activePointer: number | null = null;
+let pointerDown = false;
+const lastUv = { u: 0, v: 0 };
+const filterX = new OneEuroFilter(POINTER_MIN_CUTOFF_HZ, POINTER_BETA);
+const filterY = new OneEuroFilter(POINTER_MIN_CUTOFF_HZ, POINTER_BETA);
+let lastFilterTime = 0;
+let clickLock: { x: number; y: number } | null = null;
+
+function resetPointerFilter() {
+  filterX.reset();
+  filterY.reset();
+  lastFilterTime = 0;
+  clickLock = null;
+}
+
+function onPanelPointer(op: 'move' | 'down' | 'up', e: PanelPointerEvent) {
+  if (!e.uv) return;
+  const h = widthM * aspect;
+  const now = performance.now();
+  const dt = lastFilterTime ? (now - lastFilterTime) / 1000 : 0;
+  lastFilterTime = now;
+
+  // Coordinate in metri sul pannello, origine al centro: il filtro lavora in unità fisiche.
+  let x = filterX.filter((e.uv.x - 0.5) * widthM, dt);
+  let y = filterY.filter((e.uv.y - 0.5) * h, dt);
+
+  if (op === 'down') clickLock = { x, y };
+  if (clickLock) {
+    if (Math.hypot(x - clickLock.x, y - clickLock.y) < DRAG_START_M) {
+      x = clickLock.x;
+      y = clickLock.y;
+    } else {
+      clickLock = null; // movimento deciso: da qui è un trascinamento
+    }
+  }
+  if (op === 'up') clickLock = null;
+
+  lastUv.u = x / widthM + 0.5;
+  lastUv.v = y / h + 0.5;
+  cursor.position.set(x, y, 0.003);
+  cursor.visible = true;
+  client.send({ type: 'input', op, u: lastUv.u, v: lastUv.v });
+}
+
+function release() {
+  // Rilascio di sicurezza: se il puntatore esce col tasto premuto, il Mac non deve restare in trascinamento.
+  if (pointerDown) client.send({ type: 'input', op: 'up', u: lastUv.u, v: lastUv.v });
+  pointerDown = false;
+  activePointer = null;
+  cursor.visible = false;
+  resetPointerFilter();
+}
+
+// Gli eventi puntatore (pmndrs/pointer-events, attivati da RayInteractable) risalgono dalla mesh che il
+// sistema dei layer crea come figlia dell'entità. I tipi three non li conoscono, da qui il cast.
+const on = (type: string, fn: PointerListener) =>
+  (layerEntity.object3D!.addEventListener as (t: string, f: PointerListener) => void)(type, (e) => {
+    if (isXrPointer(e)) fn(e);
+  });
+
+on('pointerenter', (e) => {
+  if (activePointer != null) return;
+  activePointer = e.pointerId;
+  resetPointerFilter();
+});
+on('pointermove', (e) => {
+  if (e.pointerId === activePointer) onPanelPointer('move', e);
+});
+on('pointerdown', (e) => {
+  if (e.pointerId !== activePointer) {
+    release();
+    activePointer = e.pointerId;
+    resetPointerFilter();
+  }
+  pointerDown = true;
+  onPanelPointer('down', e);
+});
+on('pointerup', (e) => {
+  if (e.pointerId !== activePointer) return;
+  pointerDown = false;
+  onPanelPointer('up', e);
+});
+on('pointerleave', (e) => {
+  if (e.pointerId === activePointer) release();
+});
+
+// --- Layout -------------------------------------------------------------------------
 
 function applySize() {
   const h = widthM * aspect;
-  meshPanel.scale.set(widthM, h, 1);
   layerEntity.setValue(XRQuadLayer, 'width', widthM);
   layerEntity.setValue(XRQuadLayer, 'height', h);
-  // Le etichette sono figlie: le teniamo sopra il bordo, a dimensione costante.
-  meshLabel.scale.set(1 / widthM, 1 / h, 1);
-  meshLabel.position.set(0, 0.5 + 0.04 / h, 0);
-  layerLabel.position.set(0, h / 2 + 0.04, 0);
+  layerEntity.object3D!.position.set(0, -(BAR_HEIGHT_M / 2 + BAR_GAP_M + h / 2), 0);
+  const hudObj = hudEntity.object3D!;
+  hudObj.position.set(0, -(BAR_HEIGHT_M / 2 + BAR_GAP_M + h + 0.09), 0.02);
+  hudObj.rotation.set(-0.3, 0, 0);
 }
 
 const tmpDir = new Vector3();
+const tmpBase = new Vector3();
 function placeInFront() {
   const head = world.camera;
   head.getWorldDirection(tmpDir);
   tmpDir.y = 0;
   tmpDir.normalize();
   const yaw = Math.atan2(-tmpDir.x, -tmpDir.z);
-  const base = new Vector3().setFromMatrixPosition(head.matrixWorld);
-  const center = base.clone().addScaledVector(tmpDir, PANEL_DISTANCE_M);
-  const right = new Vector3(-tmpDir.z, 0, tmpDir.x);
-  const offset = widthM / 2 + PANEL_GAP_M / 2;
-
-  const place = (e: Entity, side: number) => {
-    const o = e.object3D!;
-    o.position.copy(center).addScaledVector(right, side * offset);
-    o.position.y = base.y - 0.05;
-    o.rotation.set(0, yaw, 0);
-  };
-  place(meshEntity, -1);
-  place(layerEntity, 1);
-  const h = hudEntity.object3D!;
-  h.position.copy(center);
-  h.position.y = base.y - 0.05 - (widthM * aspect) / 2 - 0.15;
-  h.rotation.set(-0.35, yaw, 0);
+  tmpBase.setFromMatrixPosition(head.matrixWorld);
+  const o = barEntity.object3D!;
+  o.position.copy(tmpBase).addScaledVector(tmpDir, PANEL_DISTANCE_M);
+  // Barra poco sopra gli occhi: il centro della finestra cade leggermente sotto lo sguardo.
+  o.position.y = tmpBase.y + (widthM * aspect) / 2 - 0.08;
+  o.rotation.set(0, yaw, 0);
 }
 
 applySize();
@@ -222,16 +349,17 @@ video.addEventListener('resize', () => {
   applySize();
 });
 
-// --- Sistema: input, frame rate, HUD ---------------------------------------------------
+// --- Sistema: input controller, frame rate, HUD ---------------------------------------------
 
-class SpikeSystem extends createSystem({}) {
+class WorkspaceSystem extends createSystem({}) {
   private frames = 0;
   private elapsed = 0;
   private xrFps = 0;
   private stats: StreamStats | null = null;
   private targetRate: number | string = '-';
-  private mipmaps = true;
   private logTick = 0;
+  private head = new Vector3();
+  private panelPos = new Vector3();
 
   init() {
     this.renderer.xr.addEventListener('sessionstart', () => {
@@ -248,6 +376,7 @@ class SpikeSystem extends createSystem({}) {
     });
     setInterval(async () => {
       this.stats = await client.stats();
+      this.targetRate = this.renderer.xr.getSession()?.frameRate ?? '-';
       const st = this.stats;
       if (st && st.mbps > 0.2 && (this.logTick = (this.logTick + 1) % 4) === 0) {
         remoteLog(
@@ -255,7 +384,6 @@ class SpikeSystem extends createSystem({}) {
             `decode ${st.decodeMs}ms jitterbuf ${st.jitterBufferMs}ms rtt ${st.rttMs}ms persi ${st.framesDropped} xr ${this.xrFps.toFixed(0)}fps`,
         );
       }
-      this.targetRate = this.renderer.xr.getSession()?.frameRate ?? '-';
     }, 500);
   }
 
@@ -280,34 +408,35 @@ class SpikeSystem extends createSystem({}) {
 
     const pad = this.input.gamepads.right;
     if (!pad) return;
-    if (pad.getAxesEnteringUp(InputComponent.Thumbstick)) {
+    if (activePointer != null) {
+      // Sulla finestra lo stick scorre il contenuto, in modo continuo e proporzionale.
+      const stick = pad.getAxesValues(InputComponent.Thumbstick);
+      if (stick && Math.abs(stick.y) > STICK_DEADZONE) {
+        client.send({ type: 'input', op: 'scroll', dy: Math.round(-stick.y * SCROLL_PX_PER_FRAME) });
+      }
+    } else if (pad.getAxesEnteringUp(InputComponent.Thumbstick)) {
       widthM = Math.min(widthM * 1.1, 3);
       applySize();
     } else if (pad.getAxesEnteringDown(InputComponent.Thumbstick)) {
       widthM = Math.max(widthM / 1.1, 0.3);
       applySize();
     }
-    if (pad.getButtonDown(InputComponent.A_Button)) {
-      this.mipmaps = !this.mipmaps;
-      meshTexture.generateMipmaps = this.mipmaps;
-      meshTexture.minFilter = this.mipmaps ? LinearMipmapLinearFilter : LinearFilter;
-      meshTexture.needsUpdate = true;
-    }
     if (pad.getButtonDown(InputComponent.B_Button)) placeInFront();
   }
 
   private redrawHud() {
     const s = this.stats;
-    const head = new Vector3().setFromMatrixPosition(world.camera.matrixWorld);
-    const dist = head.distanceTo(layerEntity.object3D!.position);
+    this.head.setFromMatrixPosition(world.camera.matrixWorld);
+    layerEntity.object3D!.getWorldPosition(this.panelPos);
+    const dist = this.head.distanceTo(this.panelPos);
     const fovDeg = (2 * Math.atan(widthM / 2 / dist) * 180) / Math.PI;
-    drawHud([
-      `XR ${this.xrFps.toFixed(0)} fps (target ${this.targetRate})   mipmap A: ${this.mipmaps ? 'on' : 'off'}`,
-      s ? `stream ${s.width}×${s.height} ${s.fps}fps ${s.mbps.toFixed(1)}Mbps ${s.codec.replace('video/', '')}` : streamState,
-      `pannello ${widthM.toFixed(2)} m a ${dist.toFixed(2)} m → ${fovDeg.toFixed(0)}° di campo visivo`,
-      `${s ? ((s.width / fovDeg) | 0) + ' px/grado nello stream (Quest 3 ≈ 25)' : ''}`,
-    ]);
+    hudLines = [
+      `XR ${this.xrFps.toFixed(0)} fps (target ${this.targetRate})   pannello ${widthM.toFixed(2)} m · ${fovDeg.toFixed(0)}°`,
+      s ? `stream ${s.width}×${s.height} ${s.fps}fps ${s.codec.replace('video/', '')} · buffer ${s.jitterBufferMs}ms` : streamState,
+      activePointer != null ? `puntatore ${lastUv.u.toFixed(3)}, ${lastUv.v.toFixed(3)}${pointerDown ? ' · premuto' : ''}` : '',
+    ];
+    hud.redraw();
   }
 }
 
-world.registerSystem(SpikeSystem);
+world.registerSystem(WorkspaceSystem);

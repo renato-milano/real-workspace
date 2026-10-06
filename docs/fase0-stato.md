@@ -56,8 +56,21 @@ visore a 90 fps, con la posizione inviata via WebSocket, indipendente dal video.
 Strumenti di test: `node apps/bridge/scripts/ctl.mjs '{"testPattern":true}'` apre una finestra con movimento
 continuo e la seleziona; lo stesso script cambia `codec`, `maxres`, `fps`, `contentHint`, `degradation`.
 
+## Input remoto (2026-10-07)
+- Helper nativo `apps/bridge/native/qw-input.m` (Objective-C: i Command Line Tools attuali non compilano Swift
+  per un modulemap duplicato). Il bridge lo compila al primo avvio; serve il permesso Accessibilità.
+- Il visore manda coordinate UV del pannello; il bridge le converte in punti schermo con i bounds della finestra
+  (CGWindowList, aggiornati ogni 500 ms), porta in primo piano la finestra al click e genera gli eventi CGEvent.
+- Nel visore: barra sopra la finestra per spostarla; sulla finestra grilletto = click (doppio click incluso),
+  tenuto + movimento = trascina, stick = scroll; puntatore locale a 90 fps.
+- Lezioni:
+  - IWSDK genera anche un puntatore `screen-*` che in XR segue lo sguardo → va ignorato.
+  - Il puntatore locale non deve intercettare il raggio (`raycast` disattivato), altrimenti le UV lette sono le sue.
+  - Tremolio della mano amplificato dal raggio → filtro One Euro (0,7 Hz, beta 22, in metri sul pannello)
+    e blocco del punto al click finché non ci si sposta di oltre 1,2 cm.
+
 ## Prossimi passi
-1. Decidere WebXR vs Unity: con B leggibile, 90 fps e latenza accettabile, lo spike Unity potrebbe non servire.
-2. Click remoto: dal raggio sul pannello alle coordinate della finestra → CGEvent sul Mac; puntatore locale a 90 fps.
+1. **Deciso WebXR** (2026-10-07): Unity non serve per ora.
+2. Testo da tastiera senza guardare il Mac e scorciatoie (copia/incolla) dal visore.
 3. Whisper locale (whisper.cpp large-v3-turbo) e misura latenza push-to-talk → testo.
 4. Pulizia spike → MVP: rimuovere il pannello A, più finestre contemporanee, persistenza layout.

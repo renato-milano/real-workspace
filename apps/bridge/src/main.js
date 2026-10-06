@@ -7,6 +7,7 @@ import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { WebSocketServer } from 'ws';
+import { createInputService } from './input.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.QW_PORT ?? 8443);
@@ -121,6 +122,11 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'input' && role === 'viewer') {
+      input?.handle(msg);
+      return;
+    }
+
     if (role === 'ctl' && msg.type === 'control' && msg.testPattern) openTestPattern();
     if (role === 'viewer' || role === 'ctl') send(host, { ...msg, from: id });
   });
@@ -138,6 +144,7 @@ wss.on('connection', (ws) => {
 // --- Finestra di controllo --------------------------------------------------
 
 let controlWin = null;
+let input = null;
 
 function log(line) {
   console.log(`[bridge] ${line}`);
@@ -162,6 +169,8 @@ ipcMain.handle('list-sources', async () => {
     .map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL() }));
 });
 
+ipcMain.on('active-source', (_e, sourceId) => input?.setSource(sourceId));
+
 ipcMain.handle('server-info', () => {
   const lan = Object.values(networkInterfaces())
     .flat()
@@ -172,6 +181,7 @@ ipcMain.handle('server-info', () => {
 
 app.whenReady().then(() => {
   server.listen(PORT, '0.0.0.0', () => log(`server su http://localhost:${PORT}`));
+  input = createInputService({ nativeDir: join(__dirname, '..', 'native'), log });
 
   controlWin = new BrowserWindow({
     width: 1100,
