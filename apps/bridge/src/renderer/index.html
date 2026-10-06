@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; connect-src ws://localhost:*; media-src 'self' blob: mediastream:" />
+  <title>Quest Workspace Bridge</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Quest Workspace Bridge <small>spike Fase 0</small></h1>
+    <div id="server"></div>
+  </header>
+
+  <main>
+    <section class="sources">
+      <div class="row">
+        <h2>Finestre</h2>
+        <button id="refresh">Aggiorna</button>
+      </div>
+      <div id="grid"></div>
+    </section>
+
+    <section class="side">
+      <h2>Stream</h2>
+      <video id="preview" autoplay muted playsinline></video>
+      <div id="capture-info">Nessuna finestra selezionata</div>
+
+      <label>Risoluzione max
+        <select id="maxres">
+          <option value="1280">1280 px</option>
+          <option value="1600">1600 px</option>
+          <option value="1920" selected>1920 px</option>
+          <option value="2560">2560 px</option>
+          <option value="5120">nativa</option>
+        </select>
+      </label>
+      <label>Codec
+        <select id="codec">
+          <option value="video/H264">H.264 High</option>
+          <option value="video/H264-baseline">H.264 Baseline</option>
+          <option value="video/VP9" selected>VP9</option>
+          <option value="video/AV1">AV1</option>
+          <option value="video/VP8">VP8</option>
+        </select>
+      </label>
+      <label>Bitrate max
+        <select id="bitrate">
+          <option value="8000000">8 Mbps</option>
+          <option value="15000000">15 Mbps</option>
+          <option value="25000000" selected>25 Mbps</option>
+          <option value="40000000">40 Mbps</option>
+        </select>
+      </label>
+      <label>FPS max
+        <select id="fps">
+          <option value="15">15</option>
+          <option value="30" selected>30</option>
+          <option value="60">60</option>
+        </select>
+      </label>
+
+      <h2>Viewer</h2>
+      <div id="peers">nessun viewer connesso</div>
+
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="renderer.js"></script>
+</body>
+</html>

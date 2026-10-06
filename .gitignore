@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Unity
+spikes/unity-client/[Ll]ibrary/
+spikes/unity-client/[Tt]emp/
+spikes/unity-client/[Oo]bj/
+spikes/unity-client/[Bb]uild*/
+spikes/unity-client/[Ll]ogs/
+spikes/unity-client/[Uu]ser[Ss]ettings/
+*.apk

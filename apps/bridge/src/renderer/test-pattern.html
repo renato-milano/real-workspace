@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <title>QW Test Pattern</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1e1f24; color: #d5d8de; }
+    #code { font: 14px/20px ui-monospace, Menlo, monospace; padding: 0 16px; white-space: pre; will-change: transform; }
+    .kw { color: #c586c0; } .fn { color: #dcdcaa; } .str { color: #ce9178; } .cm { color: #6a9955; } .num { color: #b5cea8; }
+    #clock {
+      position: fixed; right: 16px; top: 12px; padding: 6px 12px; border-radius: 6px;
+      background: #000; color: #3ecf8e; font: bold 28px ui-monospace, monospace;
+    }
+    #cursor { position: fixed; width: 14px; height: 22px; background: #4f8cff; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div id="code"></div>
+  <div id="clock"></div>
+  <div id="cursor"></div>
+  <script>
+    // Contenuto in movimento continuo e ripetibile: testo tipo codice che scorre + un cursore che orbita.
+    // Serve a misurare encoder/decoder in condizioni costanti, senza dipendere da quanto si muove il mouse.
+    const sample = [
+      '<span class="kw">export async function</span> <span class="fn">handleRequest</span>(req, res) {',
+      '  <span class="cm">// legge il corpo e valida i campi obbligatori</span>',
+      '  <span class="kw">const</span> body = <span class="kw">await</span> req.<span class="fn">json</span>();',
+      '  <span class="kw">if</span> (!body.id || body.items.length === <span class="num">0</span>) {',
+      '    <span class="kw">return</span> res.<span class="fn">status</span>(<span class="num">400</span>).<span class="fn">send</span>(<span class="str">"richiesta non valida"</span>);',
+      '  }',
+      '  <span class="kw">const</span> total = body.items.<span class="fn">reduce</span>((sum, it) => sum + it.price * it.qty, <span class="num">0</span>);',
+      '  <span class="kw">await</span> db.orders.<span class="fn">insert</span>({ id: body.id, total, createdAt: Date.<span class="fn">now</span>() });',
+      '  <span class="kw">return</span> res.<span class="fn">json</span>({ ok: <span class="kw">true</span>, total });',
+      '}',
+      '',
+    ];
+    const code = document.getElementById('code');
+    let html = '';
+    for (let i = 0; i < 400; i++) html += `<span class="num">${String(i + 1).padStart(4)}</span>  ${sample[i % sample.length]}\n`;
+    code.innerHTML = html;
+
+    const clock = document.getElementById('clock');
+    const cursor = document.getElementById('cursor');
+    const t0 = performance.now();
+    function frame(now) {
+      const t = (now - t0) / 1000;
+      code.style.transform = `translateY(${-((t * 60) % 4000)}px)`;
+      cursor.style.left = `${innerWidth / 2 + Math.cos(t * 2) * innerWidth * 0.3}px`;
+      cursor.style.top = `${innerHeight / 2 + Math.sin(t * 2) * innerHeight * 0.3}px`;
+      clock.textContent = new Date().toISOString().slice(11, 23);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

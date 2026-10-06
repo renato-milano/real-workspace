@@ -1,0 +1,16 @@
+{
+  "name": "@qw/bridge",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1"
+  }
+}

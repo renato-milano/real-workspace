@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QW Viewer</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #000; color: #e6e8eb; font: 14px/1.4 system-ui, sans-serif; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; overflow: auto; }
+    video { max-width: 100%; max-height: 100%; }
+    body.native video { max-width: none; max-height: none; }
+    #hud {
+      position: fixed; left: 12px; top: 12px; padding: 8px 12px; border-radius: 8px;
+      background: rgba(20, 22, 27, .85); font: 13px/1.5 ui-monospace, monospace; white-space: pre;
+    }
+    #hud .warn { color: #f5a524; }
+    #controls { position: fixed; right: 12px; top: 12px; display: flex; gap: 8px; }
+    button { background: #252932; color: inherit; border: 1px solid #3a3f4a; border-radius: 8px; padding: 8px 14px; font: inherit; }
+  </style>
+</head>
+<body>
+  <div id="stage"><video id="video" autoplay muted playsinline></video></div>
+  <div id="hud">connessione…</div>
+  <div id="controls">
+    <button id="native">Pixel 1:1</button>
+    <button id="hide">Nascondi HUD</button>
+  </div>
+  <script type="module" src="viewer.js"></script>
+</body>
+</html>
