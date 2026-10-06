@@ -1,6 +1,7 @@
 # Fase 0 — stato al 2026-10-07
 
-Spike di confronto WebXR vs Unity per il client del visore (Quest 3). Il bridge sul Mac è comune a entrambi.
+Spike per validare i rischi tecnici del workspace MR su Quest 3: streaming delle finestre del Mac, input remoto,
+voce. Esito del confronto WebXR vs Unity: **WebXR (Meta IWSDK)**.
 
 ## Come riavviare
 
@@ -16,19 +17,24 @@ npm run quest:open-2d   # in alternativa: viewer 2D di diagnostica
 Il bridge ricorda l'ultima finestra condivisa. Log diagnostici (ICE, errori XR, statistiche per stadio)
 arrivano tutti sullo stdout del bridge.
 
+Attenzione: per provare l'input remoto non condividere il terminale in cui gira Claude Code: click e testo
+arriverebbero alla sessione come messaggi. Usare un browser, Note o simili.
+
 ## Fatto
-- Bridge Electron: cattura per finestra (desktopCapturer), WebRTC H.264 con VideoToolbox, signaling WS,
-  scelta di risoluzione max / codec / bitrate / fps, statistiche encoder.
-- Viewer 2D (`apps/bridge/public`) e client condiviso `qw-client.js`.
-- Client WebXR IWSDK (`apps/xr`) in MR passthrough, due pannelli affiancati sullo stesso stream:
-  A = mesh WebGL con VideoTexture, B = `XRQuadLayer` (compositor layer). Grab, ridimensionamento, HUD.
+- Bridge Electron: cattura per finestra (desktopCapturer), WebRTC con VP9 di default (max 1920 px, banda minima
+  via SDP), signaling WS, un solo viewer per tipo, canale di controllo per i test, statistiche per stadio.
+- Viewer 2D di diagnostica (`apps/bridge/public`) e client condiviso `qw-client.js`.
+- Client WebXR IWSDK (`apps/xr`) in MR passthrough: un pannello finestra come `XRQuadLayer` (compositor layer),
+  barra di presa per spostarlo, puntatore locale, ridimensionamento, HUD con le misure.
+  Il pannello mesh WebGL usato nel confronto iniziale è stato rimosso.
+- Input remoto: click, doppio click, trascinamento e scroll sulla finestra condivisa (dettagli sotto).
 - Workaround per bug IWSDK 1.0.1 su Quest (render target del layer con samples=4 → crash in drawBuffers):
   `resolveDepthBuffer = false` sul render target, vedi `apps/xr/src/index.ts`.
 
 ## Risultati finora
 | Misura | Esito |
 |---|---|
-| Frame rate XR con passthrough + 2 pannelli | **90 fps stabili** |
+| Frame rate XR con passthrough + 2 pannelli (confronto) | **90 fps stabili** |
 | Leggibilità A (mesh) vs B (compositor layer) | **B nettamente migliore**; a 1920 px "perfetta" (giudizio utente) |
 | Latenza percepita su B | **accettabile** (giudizio utente, 2026-10-07) |
 
@@ -50,8 +56,8 @@ Cosa ha fatto la differenza, in ordine di impatto:
 4. **Un solo viewer per tipo** (le schede rimaste aperte raddoppiavano codifica e decodifica).
 
 Limite noto: la cattura finestre di macOS consegna ~30 fps, quindi il cursore del Mac nello stream si muove a
-30 fps contro i 90 del visore (leggermente a scatti). Soluzione prevista: puntatore disegnato localmente nel
-visore a 90 fps, con la posizione inviata via WebSocket, indipendente dal video.
+30 fps contro i 90 del visore. Mitigato dal puntatore disegnato localmente nel visore a 90 fps (vedi Input
+remoto); il cursore del Mac resta visibile nello stream, leggermente in ritardo.
 
 Strumenti di test: `node apps/bridge/scripts/ctl.mjs '{"testPattern":true}'` apre una finestra con movimento
 continuo e la seleziona; lo stesso script cambia `codec`, `maxres`, `fps`, `contentHint`, `degradation`.
@@ -62,7 +68,8 @@ continuo e la seleziona; lo stesso script cambia `codec`, `maxres`, `fps`, `cont
 - Il visore manda coordinate UV del pannello; il bridge le converte in punti schermo con i bounds della finestra
   (CGWindowList, aggiornati ogni 500 ms), porta in primo piano la finestra al click e genera gli eventi CGEvent.
 - Nel visore: barra sopra la finestra per spostarla; sulla finestra grilletto = click (doppio click incluso),
-  tenuto + movimento = trascina, stick = scroll; puntatore locale a 90 fps.
+  tenuto + movimento = trascina, stick = scroll; puntatore locale a 90 fps. Fuori dalla finestra lo stick
+  ridimensiona il pannello, B lo riporta davanti. Giudizio utente dopo la taratura del filtro: "ora va bene".
 - Lezioni:
   - IWSDK genera anche un puntatore `screen-*` che in XR segue lo sguardo → va ignorato.
   - Il puntatore locale non deve intercettare il raggio (`raycast` disattivato), altrimenti le UV lette sono le sue.
@@ -70,7 +77,6 @@ continuo e la seleziona; lo stesso script cambia `codec`, `maxres`, `fps`, `cont
     e blocco del punto al click finché non ci si sposta di oltre 1,2 cm.
 
 ## Prossimi passi
-1. **Deciso WebXR** (2026-10-07): Unity non serve per ora.
-2. Testo da tastiera senza guardare il Mac e scorciatoie (copia/incolla) dal visore.
-3. Whisper locale (whisper.cpp large-v3-turbo) e misura latenza push-to-talk → testo.
-4. Pulizia spike → MVP: rimuovere il pannello A, più finestre contemporanee, persistenza layout.
+1. Testo da tastiera senza guardare il Mac e scorciatoie (copia/incolla) dal visore.
+2. Whisper locale (whisper.cpp large-v3-turbo) e misura latenza push-to-talk → testo.
+3. Verso l'MVP: più finestre contemporanee, scelta della finestra dal visore, persistenza del layout.
