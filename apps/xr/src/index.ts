@@ -7,7 +7,9 @@
 //   └─ HUD di misura
 //
 // Controller destro:  stick su/giù sulla finestra = scroll; altrove = pannello più grande/piccolo
+//                     A tenuto = parla: al rilascio il testo viene scritto nella finestra (senza invio)
 //                     B = riporta il pannello davanti a te
+// Controller sinistro: X = invio · Y = cancella l'ultima dettatura
 
 import {
   CanvasTexture,
@@ -37,6 +39,7 @@ import {
 import projectOptions from 'virtual:iwsdk-project';
 import { connectViewer, type StreamStats } from '@qw/client';
 import { OneEuroFilter } from './one-euro.js';
+import { createMic, type MicState } from './voice.js';
 
 const PANEL_WIDTH_M = 1.2;
 const PANEL_DISTANCE_M = 1.0;
@@ -66,6 +69,9 @@ const client = connectViewer({
     video.play().catch(() => {});
   },
   onState: (s) => (streamState = s),
+  onMessage: (msg) => {
+    if (msg.type === 'transcript') onTranscript(msg as unknown as Transcript);
+  },
 });
 
 // Diagnostica: errori e eventi chiave finiscono nel log del bridge (il browser del Quest non è ispezionabile da qui).
@@ -82,6 +88,39 @@ console.warn = (...args: unknown[]) => {
   remoteLog(`console.warn: ${args.map(String).join(' ')}`);
   origWarn(...args);
 };
+
+// --- Voce (push-to-talk) -------------------------------------------------------------
+
+type Transcript = { text?: string; error?: string; audioMs: number; whisperMs?: number; typed?: boolean };
+
+let micState: MicState = 'off';
+let micDetail = '';
+let voiceStatus = '';
+let voiceText = '';
+let releasedAt = 0;
+
+const mic = createMic({
+  sendChunk: (pcm) => client.sendBinary(pcm),
+  onState: (s, detail) => {
+    micState = s;
+    if (detail) micDetail = detail;
+    remoteLog(`microfono: ${s}${detail ? ` (${detail})` : ''}`);
+  },
+});
+
+function onTranscript(t: Transcript) {
+  // Latenza percepita: dal rilascio del tasto al testo nel visore.
+  const totalMs = Math.round(performance.now() - releasedAt);
+  if (t.error) {
+    voiceStatus = `voce: errore — ${t.error}`;
+    voiceText = '';
+  } else {
+    const where = !t.text ? '' : t.typed ? ' · scritto (X invia, Y cancella)' : ' · nessuna finestra, non inserito';
+    voiceStatus = `voce: ${(t.audioMs / 1000).toFixed(1)} s · ${totalMs} ms${where}`;
+    voiceText = t.text || '(niente di riconosciuto)';
+  }
+  remoteLog(`[voce] audio ${t.audioMs}ms whisper ${t.whisperMs ?? '-'}ms totale ${totalMs}ms`);
+}
 
 // Texture del layer: copiamo i pixel 1:1 nella superficie del compositor, senza conversioni.
 const layerTexture = new VideoTexture(video);
@@ -130,7 +169,8 @@ function canvasPlane(
 }
 
 let hudLines: string[] = [];
-const hud = canvasPlane(0.8, 0.13, 1024, (ctx, w, h) => {
+const HUD_TEXT_LINES = 2; // righe per l'ultima trascrizione
+const hud = canvasPlane(0.8, 0.22, 1024, (ctx, w, h) => {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = 'rgba(16,18,22,0.88)';
   ctx.beginPath();
@@ -139,6 +179,23 @@ const hud = canvasPlane(0.8, 0.13, 1024, (ctx, w, h) => {
   ctx.fillStyle = '#e6e8eb';
   ctx.font = '30px ui-monospace, monospace';
   hudLines.forEach((l, i) => ctx.fillText(l, 24, 46 + i * 42));
+  // Trascrizione: a capo sulle parole, al massimo HUD_TEXT_LINES righe (le ultime parole restano visibili).
+  if (voiceText) {
+    ctx.fillStyle = '#9fc2ff';
+    const lines: string[] = [];
+    let line = '';
+    for (const word of voiceText.split(/\s+/)) {
+      const next = line ? `${line} ${word}` : word;
+      if (ctx.measureText(next).width > w - 48 && line) {
+        lines.push(line);
+        line = word;
+      } else line = next;
+    }
+    lines.push(line);
+    const shown = lines.slice(-HUD_TEXT_LINES);
+    if (lines.length > HUD_TEXT_LINES) shown[0] = `…${shown[0]}`;
+    shown.forEach((l, i) => ctx.fillText(l, 24, 46 + (hudLines.length + i) * 42));
+  }
 });
 
 let barHover = false;
@@ -317,7 +374,7 @@ function applySize() {
   layerEntity.setValue(XRQuadLayer, 'height', h);
   layerEntity.object3D!.position.set(0, -(BAR_HEIGHT_M / 2 + BAR_GAP_M + h / 2), 0);
   const hudObj = hudEntity.object3D!;
-  hudObj.position.set(0, -(BAR_HEIGHT_M / 2 + BAR_GAP_M + h + 0.09), 0.02);
+  hudObj.position.set(0, -(BAR_HEIGHT_M / 2 + BAR_GAP_M + h + 0.13), 0.02);
   hudObj.rotation.set(-0.3, 0, 0);
 }
 
@@ -406,6 +463,19 @@ class WorkspaceSystem extends createSystem({}) {
       this.redrawHud();
     }
 
+    const left = this.input.gamepads.left;
+    if (left?.getButtonDown(InputComponent.X_Button)) {
+      client.send({ type: 'input', op: 'key', key: 'return' });
+      voiceStatus = 'voce: inviato (invio)';
+      voiceText = '';
+      this.redrawHud();
+    } else if (left?.getButtonDown(InputComponent.Y_Button)) {
+      client.send({ type: 'input', op: 'undo-dictation' });
+      voiceStatus = 'voce: ultima dettatura cancellata';
+      voiceText = '';
+      this.redrawHud();
+    }
+
     const pad = this.input.gamepads.right;
     if (!pad) return;
     if (activePointer != null) {
@@ -422,6 +492,23 @@ class WorkspaceSystem extends createSystem({}) {
       applySize();
     }
     if (pad.getButtonDown(InputComponent.B_Button)) placeInFront();
+
+    if (pad.getButtonDown(InputComponent.A_Button)) {
+      if (mic.ready) {
+        client.send({ type: 'voice', op: 'start' });
+        mic.start();
+        voiceStatus = 'voce: ● ascolto…';
+      } else {
+        voiceStatus = `voce: microfono ${micState}${micDetail ? ` (${micDetail})` : ''}`;
+      }
+      this.redrawHud();
+    } else if (pad.getButtonUp(InputComponent.A_Button) && mic.ready && voiceStatus.startsWith('voce: ●')) {
+      mic.stop();
+      client.send({ type: 'voice', op: 'end' });
+      releasedAt = performance.now();
+      voiceStatus = 'voce: trascrivo…';
+      this.redrawHud();
+    }
   }
 
   private redrawHud() {
@@ -434,6 +521,7 @@ class WorkspaceSystem extends createSystem({}) {
       `XR ${this.xrFps.toFixed(0)} fps (target ${this.targetRate})   pannello ${widthM.toFixed(2)} m · ${fovDeg.toFixed(0)}°`,
       s ? `stream ${s.width}×${s.height} ${s.fps}fps ${s.codec.replace('video/', '')} · buffer ${s.jitterBufferMs}ms` : streamState,
       activePointer != null ? `puntatore ${lastUv.u.toFixed(3)}, ${lastUv.v.toFixed(3)}${pointerDown ? ' · premuto' : ''}` : '',
+      voiceStatus || `voce: tieni premuto A per parlare (microfono ${micState})`,
     ];
     hud.redraw();
   }

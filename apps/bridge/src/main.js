@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { WebSocketServer } from 'ws';
 import { createInputService } from './input.js';
+import { createVoiceService } from './voice.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.QW_PORT ?? 8443);
@@ -57,7 +58,9 @@ const server = createServer(async (req, res) => {
 //   server → host    {type:'viewer-joined', id, name} | {type:'viewer-left', id}
 //   server → viewer  {type:'welcome', id}
 //   chiunque         {type:'signal', to, data}  → inoltrato con `from`
-//   viewer → host    {type:'input', ...}       → inoltrato al host (input remoto, step successivo)
+//   viewer → bridge  {type:'input', ...}       → input remoto sulla finestra condivisa (input.js)
+//   viewer → bridge  {type:'voice', op}  + frame binari PCM → trascrizione (voice.js)
+//   bridge → viewer  {type:'transcript', text|error, audioMs, whisperMs, typed}
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 let host = null;
@@ -72,7 +75,11 @@ wss.on('connection', (ws) => {
   let id = null;
   let role = null;
 
-  ws.on('message', (raw) => {
+  ws.on('message', (raw, isBinary) => {
+    if (isBinary) {
+      if (role === 'viewer') voice?.chunk(id, raw);
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -127,6 +134,15 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'voice' && role === 'viewer') {
+      // Il testo dettato va scritto nella finestra condivisa; il visore sa se è stato inserito.
+      voice?.handle(id, msg, (reply) => {
+        if (reply.text) reply.typed = input?.typeText(reply.text) ?? false;
+        send(ws, reply);
+      });
+      return;
+    }
+
     if (role === 'ctl' && msg.type === 'control' && msg.testPattern) openTestPattern();
     if (role === 'viewer' || role === 'ctl') send(host, { ...msg, from: id });
   });
@@ -145,6 +161,7 @@ wss.on('connection', (ws) => {
 
 let controlWin = null;
 let input = null;
+let voice = null;
 
 function log(line) {
   console.log(`[bridge] ${line}`);
@@ -182,6 +199,7 @@ ipcMain.handle('server-info', () => {
 app.whenReady().then(() => {
   server.listen(PORT, '0.0.0.0', () => log(`server su http://localhost:${PORT}`));
   input = createInputService({ nativeDir: join(__dirname, '..', 'native'), log });
+  voice = createVoiceService({ log });
 
   controlWin = new BrowserWindow({
     width: 1100,
@@ -197,3 +215,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit', () => voice?.dispose());

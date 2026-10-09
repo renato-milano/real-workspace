@@ -24,6 +24,9 @@ export function createInputService({ nativeDir, log }) {
 
   let windowId = null;
   let bounds = null; // {x, y, w, h} in punti globali
+  // Lunghezze delle dettature scritte di seguito: si annullano una alla volta, dall'ultima, finché non si
+  // fa altro (click, invio, cambio finestra).
+  let dictations = [];
 
   createInterface({ input: helper.stdout }).on('line', (line) => {
     let msg;
@@ -64,10 +67,26 @@ export function createInputService({ nativeDir, log }) {
       const m = /^window:(\d+):/.exec(sourceId ?? '');
       windowId = m ? Number(m[1]) : null;
       bounds = null;
+      dictations = [];
       if (windowId != null) send({ op: 'bounds', windowId });
     },
 
     handle(msg) {
+      if (msg.op === 'key') {
+        // Solo i tasti che servono dal visore: invio per mandare, esc per interrompere.
+        if (windowId == null || !['return', 'escape'].includes(msg.key)) return;
+        send({ op: 'focus', windowId });
+        send({ op: 'key', key: msg.key, count: 1 });
+        dictations = [];
+        return;
+      }
+      if (msg.op === 'undo-dictation') {
+        if (windowId == null || !dictations.length) return;
+        send({ op: 'focus', windowId });
+        send({ op: 'key', key: 'backspace', count: dictations.pop() });
+        return;
+      }
+      if (msg.op === 'down') dictations = [];
       if (msg.op === 'scroll') {
         send({ op: 'scroll', dx: msg.dx ?? 0, dy: msg.dy ?? 0 });
         return;
@@ -76,6 +95,18 @@ export function createInputService({ nativeDir, log }) {
       if (!p) return;
       if (msg.op === 'down') send({ op: 'focus', windowId });
       if (msg.op === 'move' || msg.op === 'down' || msg.op === 'up') send({ op: msg.op, ...p });
+    },
+
+    // Scrive un testo dettato nella finestra condivisa (senza invio). Dettature consecutive sono separate da
+    // uno spazio. Restituisce false se non c'è una finestra su cui scrivere.
+    typeText(text) {
+      if (windowId == null || !text) return false;
+      const chunk = dictations.length ? ` ${text}` : text;
+      send({ op: 'focus', windowId });
+      send({ op: 'type', text: chunk });
+      // Lunghezza in caratteri come li conta il backspace (code point, non unità UTF-16).
+      dictations.push([...chunk].length);
+      return true;
     },
 
     dispose() {

@@ -20,5 +20,10 @@ declare module '@qw/client' {
     name: string;
     onStream: (stream: MediaStream) => void;
     onState?: (state: string) => void;
-  }): { send(msg: unknown): void; stats(): Promise<StreamStats | null> };
+    onMessage?: (msg: { type: string; [key: string]: unknown }) => void;
+  }): {
+    send(msg: unknown): void;
+    sendBinary(data: ArrayBuffer | ArrayBufferView): boolean;
+    stats(): Promise<StreamStats | null>;
+  };
 }

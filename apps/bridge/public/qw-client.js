@@ -1,6 +1,6 @@
 // Client viewer condiviso (viewer 2D e client WebXR): signaling con il bridge e ricezione WebRTC.
 
-export function connectViewer({ name, onStream, onState = () => {} }) {
+export function connectViewer({ name, onStream, onState = () => {}, onMessage = () => {} }) {
   let ws = null;
   let pc = null;
   let last = null;
@@ -70,7 +70,10 @@ export function connectViewer({ name, onStream, onState = () => {} }) {
         onState('sostituito da un\'altra scheda — questa è inattiva');
         return;
       }
-      if (msg.type !== 'signal') return;
+      if (msg.type !== 'signal') {
+        onMessage(msg);
+        return;
+      }
       if (msg.data.type === 'offer') onOffer(msg.data.sdp);
       else if (msg.data.candidate) {
         debug(`ice remoto: ${msg.data.candidate.candidate}`);
@@ -87,6 +90,13 @@ export function connectViewer({ name, onStream, onState = () => {} }) {
 
   return {
     send,
+
+    // Dati binari (audio): senza connessione vanno persi, non ha senso accodarli.
+    sendBinary(data) {
+      if (ws?.readyState !== WebSocket.OPEN) return false;
+      ws.send(data);
+      return true;
+    },
 
     async stats() {
       if (!pc) return null;

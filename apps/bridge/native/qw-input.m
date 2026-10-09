@@ -8,6 +8,8 @@
 //   {"op":"move","x","y"}            sposta il cursore (trascina se il tasto è premuto)
 //   {"op":"down","x","y"} / {"op":"up","x","y"}
 //   {"op":"scroll","dx","dy"}        scroll in pixel
+//   {"op":"type","text"}             scrive testo Unicode (accenti inclusi) nella finestra in primo piano
+//   {"op":"key","key","count"}       tasto speciale: "return" | "backspace" | "escape", ripetuto count volte
 // Coordinate: punti globali con origine in alto a sinistra (le stesse di CGWindowList e CGEvent).
 //
 // Build: clang -fobjc-arc -O2 qw-input.m -framework AppKit -framework ApplicationServices -o bin/qw-input
@@ -85,6 +87,39 @@ static void postMouse(CGEventType type, CGPoint p, int64_t clicks) {
   CFRelease(e);
 }
 
+// Testo come eventi tastiera Unicode: indipendente dal layout di tastiera, funziona anche nei terminali.
+// Pezzi da 20 unità UTF-16 (limite pratico di CGEventKeyboardSetUnicodeString), senza spezzare le coppie surrogate.
+static void typeUnicode(NSString *text) {
+  NSUInteger i = 0;
+  while (i < text.length) {
+    NSUInteger len = MIN(20, text.length - i);
+    if (len < text.length - i && CFStringIsSurrogateHighCharacter([text characterAtIndex:i + len - 1])) len--;
+    unichar buf[20];
+    [text getCharacters:buf range:NSMakeRange(i, len)];
+    for (int down = 1; down >= 0; down--) {
+      CGEventRef e = CGEventCreateKeyboardEvent(NULL, 0, down);
+      if (!e) return;
+      CGEventKeyboardSetUnicodeString(e, len, buf);
+      CGEventPost(kCGHIDEventTap, e);
+      CFRelease(e);
+    }
+    i += len;
+    usleep(8000); // con 2 ms TextEdit perdeva caratteri: gli eventi arrivavano più in fretta di quanto li elabora
+  }
+}
+
+static void pressKey(CGKeyCode code, int count) {
+  for (int i = 0; i < count; i++) {
+    for (int down = 1; down >= 0; down--) {
+      CGEventRef e = CGEventCreateKeyboardEvent(NULL, code, down);
+      if (!e) return;
+      CGEventPost(kCGHIDEventTap, e);
+      CFRelease(e);
+    }
+    usleep(1000);
+  }
+}
+
 static CGPoint pointOf(NSDictionary *msg) {
   return CGPointMake([msg[@"x"] doubleValue], [msg[@"y"] doubleValue]);
 }
@@ -138,6 +173,15 @@ int main(void) {
         } else if ([op isEqualToString:@"up"]) {
           buttonDown = NO;
           postMouse(kCGEventLeftMouseUp, pointOf(msg), clickCount);
+
+        } else if ([op isEqualToString:@"type"]) {
+          if ([msg[@"text"] isKindOfClass:[NSString class]]) typeUnicode(msg[@"text"]);
+
+        } else if ([op isEqualToString:@"key"]) {
+          NSDictionary *codes = @{@"return" : @36, @"backspace" : @51, @"escape" : @53};
+          NSNumber *code = codes[msg[@"key"]];
+          int count = MAX(1, MIN(2000, [msg[@"count"] intValue]));
+          if (code) pressKey((CGKeyCode)code.intValue, count);
 
         } else if ([op isEqualToString:@"scroll"]) {
           CGEventRef e = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 2,
