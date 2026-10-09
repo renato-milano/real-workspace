@@ -10,6 +10,7 @@
 //   {"op":"scroll","dx","dy"}        scroll in pixel
 //   {"op":"type","text"}             scrive testo Unicode (accenti inclusi) nella finestra in primo piano
 //   {"op":"key","key","count"}       tasto speciale: "return" | "backspace" | "escape", ripetuto count volte
+//   {"op":"sleep","ms"}              pausa (max 1 s) tra due comandi, es. tra testo e invio
 // Coordinate: punti globali con origine in alto a sinistra (le stesse di CGWindowList e CGEvent).
 //
 // Build: clang -fobjc-arc -O2 qw-input.m -framework AppKit -framework ApplicationServices -o bin/qw-input
@@ -182,6 +183,9 @@ int main(void) {
           NSNumber *code = codes[msg[@"key"]];
           int count = MAX(1, MIN(2000, [msg[@"count"] intValue]));
           if (code) pressKey((CGKeyCode)code.intValue, count);
+
+        } else if ([op isEqualToString:@"sleep"]) {
+          usleep((useconds_t)MAX(0, MIN(1000, [msg[@"ms"] intValue])) * 1000);
 
         } else if ([op isEqualToString:@"scroll"]) {
           CGEventRef e = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 2,

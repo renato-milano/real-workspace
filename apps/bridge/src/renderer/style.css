@@ -45,6 +45,7 @@ label { display: flex; justify-content: space-between; align-items: center; marg
   background: var(--panel); border: 2px solid transparent; border-radius: 8px;
   padding: 6px; cursor: pointer; text-align: left; color: var(--text);
 }
+.src.open { border-color: var(--ok); }
 .src.active { border-color: var(--accent); }
 .src img { width: 100%; aspect-ratio: 16/10; object-fit: contain; background: #000; border-radius: 4px; display: block; }
 .src span { display: block; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }

@@ -15,8 +15,8 @@
       "features": {
         "handTracking": true,
         "layers": true,
-        "anchors": false,
-        "planeDetection": false,
+        "anchors": true,
+        "planeDetection": true,
         "meshDetection": false
       }
     },

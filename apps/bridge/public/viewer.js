@@ -1,12 +1,14 @@
-// Viewer 2D: riceve lo stream di una finestra dal bridge e mostra le statistiche di decodifica.
+// Viewer 2D: mostra l'ultima finestra aperta ricevuta dal bridge e le sue statistiche di decodifica.
 import { connectViewer } from './qw-client.js';
 
 const video = document.getElementById('video');
 const hud = document.getElementById('hud');
 
+let currentSid = null;
 const client = connectViewer({
   name: 'viewer-2d',
-  onStream: (stream) => {
+  onStream: (stream, { sid }) => {
+    currentSid = sid;
     video.srcObject = stream;
   },
   onState: (state) => {
@@ -15,7 +17,7 @@ const client = connectViewer({
 });
 
 setInterval(async () => {
-  const s = await client.stats();
+  const s = currentSid && (await client.stats(currentSid));
   if (!s || !s.width) return;
   hud.innerHTML =
     `${s.width}×${s.height} @ ${s.fps}fps   ${s.mbps.toFixed(1)} Mbps\n` +

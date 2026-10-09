@@ -3,6 +3,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('bridge', {
   listSources: () => ipcRenderer.invoke('list-sources'),
   serverInfo: () => ipcRenderer.invoke('server-info'),
-  setActiveSource: (sourceId) => ipcRenderer.send('active-source', sourceId),
+  setOpenWindows: (sourceIds) => ipcRenderer.send('open-windows', sourceIds),
   onLog: (cb) => ipcRenderer.on('log', (_e, line) => cb(line)),
 });

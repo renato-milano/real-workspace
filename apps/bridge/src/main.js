@@ -58,7 +58,12 @@ const server = createServer(async (req, res) => {
 //   server → host    {type:'viewer-joined', id, name} | {type:'viewer-left', id}
 //   server → viewer  {type:'welcome', id}
 //   chiunque         {type:'signal', to, data}  → inoltrato con `from`
-//   viewer → bridge  {type:'input', ...}       → input remoto sulla finestra condivisa (input.js)
+//   viewer → bridge  {type:'windows'}         → {type:'windows', list:[{id,name,thumb}]} finestre del Mac
+//   viewer → host    {type:'open'|'close', wid} apre/chiude una finestra nel visore (cattura + stream)
+//   viewer → bridge  {type:'active', wid}      finestra attiva: riceve testo e tasti, stream a fps pieni
+//   host → viewer    {type:'notify', to, data} messaggi al viewer (to='*' per tutti), es. {type:'closed', wid}
+//   signal.data.sid  id della finestra: una RTCPeerConnection per finestra e per viewer
+//   viewer → bridge  {type:'input', wid, ...}  → input remoto sulla finestra (input.js)
 //   viewer → bridge  {type:'voice', op}  + frame binari PCM → trascrizione (voice.js)
 //   bridge → viewer  {type:'transcript', text|error, audioMs, whisperMs, typed}
 
@@ -129,6 +134,19 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'windows' && role === 'viewer') {
+      listWindows().then((list) => send(ws, { type: 'windows', list }));
+      return;
+    }
+
+    if (msg.type === 'notify' && role === 'host') {
+      if (msg.to === '*') for (const v of viewers.values()) send(v.ws, msg.data);
+      else send(viewers.get(msg.to)?.ws, msg.data);
+      return;
+    }
+
+    if (msg.type === 'active' && role === 'viewer') input?.setActive(msg.wid);
+
     if (msg.type === 'input' && role === 'viewer') {
       input?.handle(msg);
       return;
@@ -186,7 +204,19 @@ ipcMain.handle('list-sources', async () => {
     .map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL() }));
 });
 
-ipcMain.on('active-source', (_e, sourceId) => input?.setSource(sourceId));
+ipcMain.on('open-windows', (_e, sourceIds) => input?.setWindows(sourceIds));
+
+// Finestre del Mac per il launcher del visore, con miniatura JPEG (leggera da mandare sul WebSocket).
+async function listWindows() {
+  const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 400, height: 250 } });
+  return sources
+    .filter((s) => s.name && !s.name.startsWith('Quest Workspace Bridge'))
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      thumb: s.thumbnail.isEmpty() ? '' : `data:image/jpeg;base64,${s.thumbnail.toJPEG(70).toString('base64')}`,
+    }));
+}
 
 ipcMain.handle('server-info', () => {
   const lan = Object.values(networkInterfaces())

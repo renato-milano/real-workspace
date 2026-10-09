@@ -21,6 +21,27 @@ const RECORDINGS = process.env.QW_VOICE_DIR ?? join(homedir(), '.cache', 'qw-voi
 const SAVE = process.env.QW_VOICE_SAVE !== '0';
 const MAX_RECORDINGS = 200;
 
+// Silenzio o rumore: Whisper "allucina" frasi tipiche dei sottotitoli ("Grazie.") e con l'invio automatico
+// finirebbero come comandi a Claude Code. Misure sulle registrazioni reali: silenzio RMS max ~480 su finestre
+// da 30 ms; voce 1100–9600, con almeno 0,7 s sopra soglia anche nelle frasi più brevi.
+const VOICE_RMS = 500;
+const MIN_VOICED_MS = 200;
+const HALLUCINATIONS = /^(grazie( a tutti| per la visione)?|sottotitoli.*|amara\.org.*|\.+|…)[.!]?$/i;
+
+function voicedMs(pcm) {
+  const win = 480; // 30 ms a 16 kHz
+  let voiced = 0;
+  for (let off = 0; off + win * 2 <= pcm.length; off += win * 2) {
+    let sum = 0;
+    for (let i = 0; i < win; i++) {
+      const v = pcm.readInt16LE(off + i * 2);
+      sum += v * v;
+    }
+    if (Math.sqrt(sum / win) > VOICE_RMS) voiced++;
+  }
+  return voiced * 30;
+}
+
 export function wav(pcm) {
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
@@ -135,10 +156,20 @@ export function createVoiceService({ log }) {
         reply({ type: 'transcript', text: '', audioMs, whisperMs: 0 });
         return;
       }
+      const pcm = Buffer.concat(s.chunks);
+      const voiced = voicedMs(pcm);
+      if (voiced < MIN_VOICED_MS) {
+        log(`voce: ${audioMs} ms di audio senza voce (${voiced} ms sopra soglia), ignorato`);
+        reply({ type: 'transcript', text: '', audioMs, whisperMs: 0 });
+        return;
+      }
       const t0 = performance.now();
       try {
-        const pcm = Buffer.concat(s.chunks);
-        const raw = await transcribe(pcm);
+        let raw = await transcribe(pcm);
+        if (voiced < 1500 && HALLUCINATIONS.test(raw)) {
+          log(`voce: scartata allucinazione tipica "${raw}" (${voiced} ms di voce)`);
+          raw = '';
+        }
         const whisperMs = Math.round(performance.now() - t0);
         const text = correct(raw);
         log(`voce: ${audioMs} ms di audio → ${whisperMs} ms whisper: "${text}"${text !== raw ? ` (grezzo: "${raw}")` : ''}`);

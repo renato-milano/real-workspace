@@ -18,12 +18,13 @@ declare module '@qw/client' {
   }
   export function connectViewer(opts: {
     name: string;
-    onStream: (stream: MediaStream) => void;
-    onState?: (state: string) => void;
+    onStream: (stream: MediaStream, info: { sid: string; name?: string }) => void;
+    onClosed?: (sid: string, reason?: string) => void;
+    onState?: (state: string, sid?: string) => void;
     onMessage?: (msg: { type: string; [key: string]: unknown }) => void;
   }): {
     send(msg: unknown): void;
     sendBinary(data: ArrayBuffer | ArrayBufferView): boolean;
-    stats(): Promise<StreamStats | null>;
+    stats(sid: string): Promise<StreamStats | null>;
   };
 }

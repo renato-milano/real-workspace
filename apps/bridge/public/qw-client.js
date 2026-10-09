@@ -1,10 +1,10 @@
 // Client viewer condiviso (viewer 2D e client WebXR): signaling con il bridge e ricezione WebRTC.
+// Una RTCPeerConnection per finestra aperta (sid = id della finestra sul Mac).
 
-export function connectViewer({ name, onStream, onState = () => {}, onMessage = () => {} }) {
+export function connectViewer({ name, onStream, onClosed = () => {}, onState = () => {}, onMessage = () => {} }) {
   let ws = null;
-  let pc = null;
-  let last = null;
   let replaced = false;
+  const pcs = new Map(); // sid → { pc, last }
   const outbox = []; // messaggi inviati prima che il WebSocket sia aperto
 
   function send(msg) {
@@ -20,43 +20,38 @@ export function connectViewer({ name, onStream, onState = () => {}, onMessage = 
     ws?.send(JSON.stringify({ type: 'signal', to: 'host', data }));
   }
 
-  async function onOffer(sdp) {
+  function closePc(sid) {
+    pcs.get(sid)?.pc.close();
+    pcs.delete(sid);
+  }
+
+  async function onOffer(sid, sdp, windowName) {
     // Il bridge può rinegoziare (es. cambio codec): ogni offer riparte da una connessione nuova.
-    pc?.close();
-    pc = new RTCPeerConnection({ iceServers: [] });
-    last = null;
+    closePc(sid);
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    pcs.set(sid, { pc, last: null });
     pc.ontrack = (e) => {
       // Latenza minima: chiediamo al jitter buffer di non trattenere frame oltre lo stretto necessario.
-      const hasTarget = 'jitterBufferTarget' in e.receiver;
-      const hasHint = 'playoutDelayHint' in e.receiver;
-      if (hasTarget) e.receiver.jitterBufferTarget = 0;
-      if (hasHint) e.receiver.playoutDelayHint = 0;
-      debug(
-        `ricevitore: jitterBufferTarget=${hasTarget ? e.receiver.jitterBufferTarget : 'n/d'} ` +
-          `playoutDelayHint=${hasHint ? e.receiver.playoutDelayHint : 'n/d'} ua=${navigator.userAgent}`,
-      );
-      onStream(e.streams[0] ?? new MediaStream([e.track]));
+      if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 0;
+      if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+      onStream(e.streams[0] ?? new MediaStream([e.track]), { sid, name: windowName });
     };
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        debug(`ice locale: ${e.candidate.candidate}`);
-        signal({ candidate: e.candidate.toJSON() });
-      }
+      if (e.candidate) signal({ sid, candidate: e.candidate.toJSON() });
     };
-    pc.onicegatheringstatechange = () => debug(`gathering ${pc.iceGatheringState}`);
-    pc.oniceconnectionstatechange = () => debug(`ice ${pc.iceConnectionState}`);
     pc.onconnectionstatechange = () => {
-      debug(`connection ${pc.connectionState}`);
-      onState(pc.connectionState);
+      debug(`${windowName ?? sid}: ${pc.connectionState}`);
+      onState(pc.connectionState, sid);
     };
     await pc.setRemoteDescription({ type: 'offer', sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    signal({ type: 'answer', sdp: answer.sdp });
+    signal({ sid, type: 'answer', sdp: answer.sdp });
   }
 
   function open() {
     ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'hello', role: 'viewer', name }));
       while (outbox.length) ws.send(JSON.stringify(outbox.shift()));
@@ -66,22 +61,29 @@ export function connectViewer({ name, onStream, onState = () => {}, onMessage = 
       const msg = JSON.parse(e.data);
       if (msg.type === 'replaced') {
         replaced = true;
-        pc?.close();
-        onState('sostituito da un\'altra scheda — questa è inattiva');
+        for (const sid of [...pcs.keys()]) closePc(sid);
+        onState("sostituito da un'altra scheda — questa è inattiva");
+        return;
+      }
+      if (msg.type === 'closed') {
+        closePc(msg.wid);
+        onClosed(msg.wid, msg.reason);
         return;
       }
       if (msg.type !== 'signal') {
         onMessage(msg);
         return;
       }
-      if (msg.data.type === 'offer') onOffer(msg.data.sdp);
+      const { sid } = msg.data;
+      if (msg.data.type === 'offer') onOffer(sid, msg.data.sdp, msg.data.name);
       else if (msg.data.candidate) {
-        debug(`ice remoto: ${msg.data.candidate.candidate}`);
-        pc?.addIceCandidate(msg.data.candidate).catch((err) => debug(`addIceCandidate: ${err.message}`));
+        pcs.get(sid)?.pc.addIceCandidate(msg.data.candidate).catch((err) => debug(`addIceCandidate: ${err.message}`));
       }
     };
     ws.onclose = () => {
       if (replaced) return;
+      // Al ricollegamento il bridge rimanda tutte le finestre aperte: quelle vecchie non servono più.
+      for (const sid of [...pcs.keys()]) closePc(sid);
       onState('bridge non raggiungibile, riprovo…');
       setTimeout(open, 1000);
     };
@@ -98,9 +100,11 @@ export function connectViewer({ name, onStream, onState = () => {}, onMessage = 
       return true;
     },
 
-    async stats() {
-      if (!pc) return null;
-      const report = await pc.getStats();
+    // Statistiche di ricezione di una finestra.
+    async stats(sid) {
+      const entry = pcs.get(sid);
+      if (!entry) return null;
+      const report = await entry.pc.getStats();
       let inb, pair;
       report.forEach((s) => {
         if (s.type === 'inbound-rtp' && s.kind === 'video') inb = s;
@@ -108,6 +112,7 @@ export function connectViewer({ name, onStream, onState = () => {}, onMessage = 
       });
       if (!inb) return null;
       const codec = inb.codecId ? report.get(inb.codecId) : null;
+      const last = entry.last;
       let mbps = 0;
       // Medie sull'intervallo dall'ultima lettura: ms per frame di decodifica e di attesa nel jitter buffer.
       let decodeMs = 0;
@@ -119,7 +124,7 @@ export function connectViewer({ name, onStream, onState = () => {}, onMessage = 
         const dEmitted = (inb.jitterBufferEmittedCount ?? 0) - last.emitted;
         if (dEmitted > 0) jitterBufferMs = (((inb.jitterBufferDelay ?? 0) - last.jbDelay) * 1000) / dEmitted;
       }
-      last = {
+      entry.last = {
         bytes: inb.bytesReceived,
         ts: inb.timestamp,
         framesDecoded: inb.framesDecoded ?? 0,

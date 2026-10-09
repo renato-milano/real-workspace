@@ -1,14 +1,16 @@
-# Fase 0 — stato al 2026-10-09
+# Stato del progetto — 2026-10-10
 
-Spike per validare i rischi tecnici del workspace MR su Quest 3: streaming delle finestre del Mac, input remoto,
-voce. Esito del confronto WebXR vs Unity: **WebXR (Meta IWSDK)**.
+Fase 0 (spike dei rischi tecnici: streaming delle finestre del Mac, input remoto, voce) conclusa; esito del
+confronto WebXR vs Unity: **WebXR (Meta IWSDK)**. Fase 1 in corso: workspace con più finestre da disporre
+nella stanza (vedi "Finestre multiple" e "Stanza").
 
 ## Come riavviare
 
 ```bash
 scripts/setup-whisper.sh  # una volta sola: whisper.cpp con encoder CoreML + modello (~2,8 GB in ~/.cache)
 
-# visore collegato via USB, modalità sviluppatore attiva
+# visore collegato via USB (la prima volta dopo ogni riavvio del visore), modalità sviluppatore attiva
+scripts/adb-wifi.sh     # ADB via Wi-Fi: poi il cavo si può staccare e ci si muove per la stanza
 npm run bridge          # Electron: cattura finestre + signaling (porta 8443)
 npm run xr              # Vite + IWSDK, client WebXR (https, porta 8081)
 npm run quest:reverse   # adb reverse 8443/8081 → il Quest raggiunge il Mac su localhost
@@ -16,12 +18,17 @@ npm run quest:open      # apre il client WebXR nel browser del Quest (poi "Entra
 npm run quest:open-2d   # in alternativa: viewer 2D di diagnostica
 ```
 
-Il bridge ricorda l'ultima finestra condivisa e avvia da sé whisper-server (pronto in ~3 s). Log diagnostici (ICE, errori XR, statistiche per stadio)
+Il bridge riapre le finestre che erano aperte nel visore e avvia da sé whisper-server (pronto in ~3 s). Log diagnostici (ICE, errori XR, statistiche per stadio)
 arrivano tutti sullo stdout del bridge.
 
-Se il visore smette di ricevere (stream fermo, voce senza risposta) ma è ancora collegato, di solito è caduto
-ADB: `adb kill-server && adb start-server`, poi `npm run quest:reverse`; la pagina si ricollega da sola.
-Probabile conflitto tra l'ADB di metavr e quello di MQDH (`/Applications/Meta Quest Developer Hub.app/Contents/Resources/bin/adb`).
+Tutti gli script usano un solo ADB (`scripts/adb.sh`: quello di MQDH, e la connessione Wi-Fi se c'è):
+mescolare l'ADB integrato di metavr con un server adb classico faceva perdere il visore. Col cavo, il
+collegamento cade quando ci si muove (e `adb reverse` con lui): da qui il Wi-Fi. Se il visore smette di ricevere,
+`scripts/adb.sh kill-server`, poi `scripts/adb-wifi.sh` (col cavo) e `npm run quest:reverse`; la pagina si
+ricollega da sola. Se ADB vede il visore solo a intermittenza ("read failed" nel log di adb), riavviare il visore.
+
+Debug della pagina nel visore: `scripts/adb.sh forward tcp:9222 localabstract:chrome_devtools_remote`, poi
+`http://localhost:9222/json` (Chrome DevTools Protocol); lo stato del client è in `window.__qw`.
 
 Attenzione: per provare l'input remoto non condividere il terminale in cui gira Claude Code: click e testo
 arriverebbero alla sessione come messaggi. Usare un browser, Note o simili.
@@ -30,12 +37,13 @@ arriverebbero alla sessione come messaggi. Usare un browser, Note o simili.
 - Bridge Electron: cattura per finestra (desktopCapturer), WebRTC con VP9 di default (max 1920 px, banda minima
   via SDP), signaling WS, un solo viewer per tipo, canale di controllo per i test, statistiche per stadio.
 - Viewer 2D di diagnostica (`apps/bridge/public`) e client condiviso `qw-client.js`.
-- Client WebXR IWSDK (`apps/xr`) in MR passthrough: un pannello finestra come `XRQuadLayer` (compositor layer),
-  barra di presa per spostarlo, puntatore locale, ridimensionamento, HUD con le misure.
-  Il pannello mesh WebGL usato nel confronto iniziale è stato rimosso.
+- Client WebXR IWSDK (`apps/xr`) in MR passthrough: ogni finestra è un `XRQuadLayer` (compositor layer) con
+  barra di presa, HUD con le misure sotto la finestra attiva. Il pannello mesh WebGL del confronto iniziale è
+  stato rimosso.
+- Finestre multiple, launcher nel visore, spostamento nella stanza (dettagli sotto).
 - Input remoto: click, doppio click, trascinamento e scroll sulla finestra condivisa (dettagli sotto).
 - Voce push-to-talk: A tenuto sul controller destro, trascrizione locale con whisper.cpp, testo scritto nella
-  finestra condivisa; X invia, Y cancella l'ultima dettatura (dettagli sotto).
+  finestra attiva e inviato (dettagli sotto).
 - Workaround per bug IWSDK 1.0.1 su Quest (render target del layer con samples=4 → crash in drawBuffers):
   `resolveDepthBuffer = false` sul render target, vedi `apps/xr/src/index.ts`.
 
@@ -90,11 +98,15 @@ continuo e la seleziona; lo stesso script cambia `codec`, `maxres`, `fps`, `cont
 - Bridge: `apps/bridge/src/voice.js` avvia whisper-server (modello in memoria) e al rilascio gli passa il WAV;
   il testo passa per `corrections.js` e torna al visore, che lo mostra nell'HUD con i tempi.
 - Modello large-v3-turbo, italiano fisso, decodifica greedy, nessun prompt.
-- Il testo viene scritto nella finestra condivisa (focus + eventi tastiera Unicode da `qw-input`), senza invio.
-  Dettature consecutive sono separate da uno spazio. Controller sinistro: X = invio, Y = cancella l'ultima
-  dettatura (backspace per la sua lunghezza; vale finché non si clicca, si invia o si cambia finestra).
-  Verificato: 5 dettature consecutive identiche al testo atteso in TextEdit; dettato dal visore un messaggio a
-  Claude Code arrivato corretto (6,3 s di audio → 0,8 s).
+- Il testo viene scritto nella finestra attiva (focus + eventi tastiera Unicode da `qw-input`) e **inviato**:
+  dettando a Claude Code, finire di parlare vuol dire mandare il comando (scelta dell'utente). Tra testo e
+  invio 150 ms di pausa: le TUI trattano una raffica di caratteri come incolla, e un invio dentro la raffica
+  diventerebbe un a capo. Controller sinistro: X = invio, Y = esc (interrompe Claude Code).
+  Verificato: dettature consecutive identiche al testo atteso in TextEdit; messaggi dettati dal visore a
+  Claude Code arrivati corretti e partiti da soli (6,3 s di audio → 0,8 s).
+- Filtro silenzio: sotto 200 ms di voce (finestre da 30 ms con RMS > 500) non si trascrive nulla, e le
+  allucinazioni tipiche ("Grazie.", "Sottotitoli…") con poca voce vengono scartate. Senza, una pressione
+  accidentale di A mandava "Grazie." a Claude Code.
 - Registrazioni e trascrizioni salvate in `~/.cache/qw-voice/recordings` (ultime 200; `QW_VOICE_SAVE=0` le
   disattiva) per confrontare impostazioni con `node apps/bridge/scripts/voice-ab.mjs [n]`.
 
@@ -128,7 +140,52 @@ Lezioni:
 - Errori ricorrenti ancora aperti: "README" → "ritmo" (non correggibile a dizionario: è una parola comune),
   "esegui" → "eseguvi", "apri" → "apre".
 
+## Stanza (2026-10-09)
+- Probe sul visore: ancora persistente WebXR (`requestPersistentHandle` / `restorePersistentAnchor`) ripristinata
+  in ~10 ms tra sessioni, dopo il riavvio del visore e anche dopo una nuova scansione della stanza; tracciata
+  per minuti senza perdite. Le coordinate della stanza invece cambiano a ogni sessione (stesso punto fisico:
+  (0; 1,65; −0,97) e poi (−1,11; 1,21; 0,30)): le posizioni vanno salvate rispetto alle ancore, mai in assoluto.
+- Piani da Space Setup (plane-detection): 19 nella stanza dell'utente (8 segmenti di muro, porte, pavimento,
+  soffitto, letto, tavoli). Senza Space Setup con i muri (solo i confini) i piani sono 0. La scansione si
+  avvia anche dalla pagina (`initiateRoomCapture`, pulsante "Scansiona stanza" nel launcher); i muri nuovi
+  arrivano dalla sessione successiva.
+- `apps/xr/src/room.ts` disegna i piani (muri azzurri, porte viola, mobili gialli) mentre si sposta una finestra.
+
+## Finestre multiple (2026-10-10)
+- Bridge: insieme di finestre aperte, ciascuna catturata una volta e inviata con una RTCPeerConnection per
+  (viewer, finestra), così aprirne o chiuderne una non tocca le altre. La finestra attiva (ultima cliccata) e
+  quella indicata dal raggio vanno a 30 fps, le altre a 5. Il bridge ricorda le finestre aperte tra riavvii.
+- Visore (`panel.ts`, `launcher.ts`): launcher con le miniature delle finestre del Mac (click dello stick
+  sinistro); ogni finestra ha una barra larga quanto lei (grilletto = sposta, con un margine invisibile verso
+  l'alto) e un × staccato. Grip su un punto qualsiasi della finestra = spostala. Mentre la sposti segue il
+  raggio sempre rivolta verso di te; stick su/giù = allontana/avvicina (fino a 8 m), sinistra/destra = più
+  piccola/grande. B = porta la finestra attiva davanti a te.
+- Misure: 4 finestre aperte, XR a 90 fps, decodifica hardware 5–7 ms per finestra.
+- **Bug del Quest Browser (Chrome 152)**: i quad layer vengono mostrati al **doppio** della larghezza e altezza
+  dichiarate, mentre la mesh su cui il raggio calcola le UV ha la dimensione dichiarata. Effetti: il video
+  copriva barra, HUD e puntatore locale; il cursore del Mac si muoveva al doppio della velocità del raggio;
+  la metà esterna della finestra non era cliccabile. Scoperto con cornici di prova via CDP (quelle a ±larghezza
+  dal centro combaciavano coi bordi visibili). Correzione in `index.ts` (`halveNativeQuadSize`): sul layer
+  nativo width/height vengono dimezzate intercettandone le assegnazioni.
+- Lezioni:
+  - I compositor layer stanno sempre sopra la scena: qualunque oggetto 3D davanti a una finestra (controller,
+    puntatore) viene coperto. Il puntatore locale è quindi disegnato dentro il layer, sopra il video, a ogni
+    frame del visore (`panel.ts`, `setCursor`).
+  - La cattura di finestra di macOS produce un frame solo quando la finestra si ridisegna: col cursore che si
+    muove sopra, TextEdit fermo dà ~4 fps, un terminale che lampeggia (Warp) 23–30. Per questo il cursore del
+    Mac nello stream va a scatti sulle finestre statiche. `getDisplayMedia` con `cursor: 'never'` non lo
+    esclude dalle catture di finestra (provato): resta come doppione in ritardo del puntatore locale.
+  - Densità costante: una finestra si apre larga 1 m ogni 1920 px di stream, così testo e cursore hanno la
+    stessa misura in tutte le finestre (prima una finestra piccola sul Mac veniva ingrandita).
+  - Con più stream attivi la trascrizione rallenta (18 s di audio: 0,8 → 1,7 s; oltre 30 s Whisper fa due
+    passate): la codifica VP9 software compete con whisper per CPU/GPU.
+  - Il filtro One Euro del puntatore era stato tarato con il guadagno 2× del bug: da ritarare se serve.
+  - Le chiusure "inspiegabili" erano click sul ×, allora attaccato alla barra: ora è staccato.
+
 ## Prossimi passi
-1. Anteprima prima dell'invio (dettando a un agente, un errore di trascrizione diventa un'istruzione) e altre
-   scorciatoie dal visore (esc, copia/incolla).
-2. Verso l'MVP: più finestre contemporanee, scelta della finestra dal visore, persistenza del layout.
+1. Aggancio ai muri e persistenza del layout: una finestra lasciata vicino a un muro vi si appoggia;
+   posizioni salvate rispetto a un'ancora persistente per finestra e riconoscimento della finestra per app e
+   titolo (gli id del Mac cambiano).
+2. Cursore del Mac fuori dallo stream (es. nasconderlo sul Mac mentre si usa il visore), ritaratura del filtro,
+   e codifica meno pesante durante la trascrizione.
+3. Anteprima prima dell'invio della dettatura, copia/incolla dal visore.

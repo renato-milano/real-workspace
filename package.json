@@ -6,9 +6,9 @@
   ],
   "scripts": {
     "bridge": "npm run start -w apps/bridge",
-    "quest:reverse": "~/.metavr/bin/metavr adb reverse tcp:8443 tcp:8443 && ~/.metavr/bin/metavr adb reverse tcp:8081 tcp:8081",
-    "quest:open": "~/.metavr/bin/metavr shell am start -a android.intent.action.VIEW -d https://localhost:8081/ com.oculus.browser",
+    "quest:reverse": "scripts/adb.sh reverse tcp:8443 tcp:8443 && scripts/adb.sh reverse tcp:8081 tcp:8081",
+    "quest:open": "scripts/adb.sh shell am start -a android.intent.action.VIEW -d https://localhost:8081/ com.oculus.browser",
     "xr": "IWSDK_DEV_OPEN=false npm run dev:runtime -w apps/xr",
-    "quest:open-2d": "~/.metavr/bin/metavr shell am start -a android.intent.action.VIEW -d http://localhost:8443/viewer.html com.oculus.browser"
+    "quest:open-2d": "scripts/adb.sh shell am start -a android.intent.action.VIEW -d http://localhost:8443/viewer.html com.oculus.browser"
   }
 }
